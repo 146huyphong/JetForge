@@ -1,0 +1,9 @@
+<launch>
+  <arg name="use_separate_camera_node" default="false" />
+  <arg name="no_drive" default="false" />
+
+  <include if="$(arg use_separate_camera_node)" file="$(find jetbot_human_follower)/launch/camera_rgb.launch" />
+
+  <node pkg="jetbot_human_follower" type="main.py" name="jetbot_human_follower"
+        args="$(eval '--no-drive' if arg('no_drive') else '')" output="screen" respawn="false" />
+</launch>

@@ -1,0 +1,1 @@
+timestamp,elapsed_s,state,reason,fps,frame_age_ms,target_id,distance_m,bearing_deg,error_dist,linear_v,angular_w,battery_v,battery_pct,blocked_prob
