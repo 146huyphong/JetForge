@@ -28,7 +28,6 @@ from modules.distance_estimator import DistanceEstimator
 from modules.collision_guard import CollisionGuard
 from modules.behavior_fsm import BehaviorFSM
 from modules.motion_controller import MotionController
-from modules.data_logger import DataLogger
 from modules.web_server import WebCockpitServer
 
 
@@ -59,7 +58,6 @@ class JetBotFollowerApp:
         self.collision_guard = CollisionGuard()
         self.motion_ctrl = MotionController()
         self.fsm = BehaviorFSM()
-        self.logger = DataLogger()
 
         self.latest_frame_shape = (config.PROCESS_HEIGHT, config.PROCESS_WIDTH, 3)
 
@@ -278,22 +276,6 @@ class JetBotFollowerApp:
                         "pid": self.motion_ctrl.get_gains(),
                     })
 
-                self.logger.log({
-                    "elapsed_s": round(now - start_time, 3),
-                    "state": state,
-                    "reason": reason,
-                    "fps": round(ema_fps, 2),
-                    "frame_age_ms": round(frame_age * 1000.0, 1),
-                    "target_id": self.tracker.locked_id if self.tracker.locked_id is not None else -1,
-                    "distance_m": round(dist_m, 3),
-                    "bearing_deg": round(bearing_deg, 2),
-                    "error_dist": round(err_d, 4),
-                    "linear_v": round(v_mps, 4),
-                    "angular_w": round(w_rads, 4),
-                    "battery_v": bat_status["voltage"],
-                    "battery_pct": bat_status["percentage"],
-                    "blocked_prob": round(collision_info["blocked_prob"], 4),
-                })
 
                 vis_frame = self._draw_overlay(
                     frame, tracks, est_info, collision_info, state, reason, v_mps, w_rads, ema_fps
@@ -325,7 +307,6 @@ class JetBotFollowerApp:
         self.detector.cleanup()
         self.collision_guard.cleanup()
         self.battery.shutdown()
-        self.logger.close()
         if self.show_window:
             cv2.destroyAllWindows()
         print("[Main] Đã tắt hoàn tất.")
