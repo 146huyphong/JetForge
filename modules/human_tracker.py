@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-human_tracker.py - Khóa ID mục tiêu 2D (Kalman Filter + HSV Histogram Re-ID + Cổng khớp quay nhanh)
+human_tracker.py - Khoa ID muc tieu 2D:
+Kalman Filter + ByteTrack 2 vong (high/low conf) + HSV Histogram Re-ID + Fast-Turn Rescue
 """
 import math
 import time
@@ -22,7 +23,6 @@ def compute_iou(box_a, box_b):
 
 
 def extract_torso_histogram(frame, bbox):
-    """Trích xuất biểu đồ màu HSV vùng thân áo để Re-ID chống nhảy ID"""
     img_h, img_w = frame.shape[:2]
     x1, y1, x2, y2 = [int(v) for v in bbox]
     w = max(1, x2 - x1)
@@ -51,7 +51,6 @@ def histogram_similarity(hist_a, hist_b):
 
 
 class KalmanBoxTracker:
-    """Bộ lọc Kalman 8 trạng thái [cx, cy, w, h, vx, vy, vw, vh]"""
     _id_counter = 1
 
     def __init__(self, bbox, hist):
@@ -131,7 +130,7 @@ class HumanTracker:
         self.locked_id = None
         self.locked_hist_gallery = None
         self.last_seen_time = 0.0
-        self.last_side = 0.0   # Dương: mục tiêu lệch bên phải tâm ảnh; Âm: bên trái
+        self.last_side = 0.0
         self.state = self.IDLE
 
     def update(self, detections, frame, now=None):
@@ -141,22 +140,27 @@ class HumanTracker:
         for trk in self.trackers:
             trk.predict()
 
-        det_hists = [extract_torso_histogram(frame, d["bbox"]) for d in detections]
+        # Tach 2 nhom tin cay theo ByteTrack: high >= DETECTION_CONF_THRESHOLD, low < threshold
+        high_dets = [d for d in detections if d["conf"] >= config.DETECTION_CONF_THRESHOLD]
+        low_dets = [d for d in detections if d["conf"] < config.DETECTION_CONF_THRESHOLD]
+
+        high_hists = [extract_torso_histogram(frame, d["bbox"]) for d in high_dets]
+        low_hists = [extract_torso_histogram(frame, d["bbox"]) for d in low_dets]
 
         num_trk = len(self.trackers)
-        num_det = len(detections)
-        matched_pairs = []
+        num_high = len(high_dets)
+        matched_high = []
         unmatched_trks = set(range(num_trk))
-        unmatched_dets = set(range(num_det))
+        unmatched_high = set(range(num_high))
 
-        # Cổng 1: Khớp kết hợp IoU + HSV Histogram
-        if num_trk > 0 and num_det > 0:
-            score_matrix = np.zeros((num_trk, num_det), dtype=np.float32)
+        # Vong 1A: Khop tin cay cao bang IoU + HSV Histogram
+        if num_trk > 0 and num_high > 0:
+            score_matrix = np.zeros((num_trk, num_high), dtype=np.float32)
             for t_idx, trk in enumerate(self.trackers):
                 pred_box = trk.get_bbox()
-                for d_idx, det in enumerate(detections):
+                for d_idx, det in enumerate(high_dets):
                     iou = compute_iou(pred_box, det["bbox"])
-                    h_sim = histogram_similarity(trk.hist, det_hists[d_idx])
+                    h_sim = histogram_similarity(trk.hist, high_hists[d_idx])
                     score_matrix[t_idx, d_idx] = (
                         config.IOU_WEIGHT * iou + config.HIST_WEIGHT * h_sim
                     )
@@ -165,15 +169,14 @@ class HumanTracker:
                 t_idx, d_idx = np.unravel_index(np.argmax(score_matrix), score_matrix.shape)
                 if score_matrix[t_idx, d_idx] < config.MATCH_THRESHOLD:
                     break
-                matched_pairs.append((t_idx, d_idx))
+                matched_high.append((t_idx, d_idx))
                 unmatched_trks.discard(t_idx)
-                unmatched_dets.discard(d_idx)
+                unmatched_high.discard(d_idx)
                 score_matrix[t_idx, :] = -1.0
                 score_matrix[:, d_idx] = -1.0
 
-        # Cổng 2 (Fast-Turn Rescue): Robot quay nhanh -> mặt/người trượt ngang nhiều pixel (IoU = 0).
-        # Khớp theo tâm gần (< 1.5 bề rộng box) + kích thước tương đồng + màu áo.
-        if unmatched_trks and unmatched_dets:
+        # Vong 1B (Fast-Turn Rescue): Robot quay nhanh -> khop theo tam gan + mau ao
+        if unmatched_trks and unmatched_high:
             for t_idx in list(unmatched_trks):
                 trk = self.trackers[t_idx]
                 px1, py1, px2, py2 = trk.get_bbox()
@@ -182,13 +185,13 @@ class HumanTracker:
 
                 best_d = None
                 best_dist = float("inf")
-                for d_idx in unmatched_dets:
-                    dx1, dy1, dx2, dy2 = detections[d_idx]["bbox"]
+                for d_idx in unmatched_high:
+                    dx1, dy1, dx2, dy2 = high_dets[d_idx]["bbox"]
                     dw = max(1.0, dx2 - dx1)
                     dcx, dcy = 0.5 * (dx1 + dx2), 0.5 * (dy1 + dy2)
                     center_dist = math.hypot(dcx - pcx, dcy - pcy)
                     scale_ratio = dw / pw
-                    h_sim = histogram_similarity(trk.hist, det_hists[d_idx])
+                    h_sim = histogram_similarity(trk.hist, high_hists[d_idx])
 
                     if (
                         center_dist < config.FAST_TURN_CENTER_RATIO * pw
@@ -200,27 +203,51 @@ class HumanTracker:
                             best_d = d_idx
 
                 if best_d is not None:
-                    matched_pairs.append((t_idx, best_d))
+                    matched_high.append((t_idx, best_d))
                     unmatched_trks.discard(t_idx)
-                    unmatched_dets.discard(best_d)
+                    unmatched_high.discard(best_d)
 
-        for t_idx, d_idx in matched_pairs:
+        for t_idx, d_idx in matched_high:
             self.trackers[t_idx].update(
-                detections[d_idx]["bbox"], det_hists[d_idx], detections[d_idx]["conf"]
+                high_dets[d_idx]["bbox"], high_hists[d_idx], high_dets[d_idx]["conf"]
             )
 
-        # Tạo track mới hoặc tái nhận diện (Re-ID) mục tiêu đã khóa bị mất dấu
-        for d_idx in unmatched_dets:
-            new_trk = KalmanBoxTracker(detections[d_idx]["bbox"], det_hists[d_idx])
+        # Vong 2 (ByteTrack Low-Conf Association): Giu track khi nguoi vao vung toi / bi che khuat
+        num_low = len(low_dets)
+        if unmatched_trks and num_low > 0:
+            rem_trks = sorted(list(unmatched_trks))
+            low_matrix = np.zeros((len(rem_trks), num_low), dtype=np.float32)
+            for row_i, t_idx in enumerate(rem_trks):
+                pred_box = self.trackers[t_idx].get_bbox()
+                for d_idx, det in enumerate(low_dets):
+                    iou = compute_iou(pred_box, det["bbox"])
+                    h_sim = histogram_similarity(self.trackers[t_idx].hist, low_hists[d_idx])
+                    low_matrix[row_i, d_idx] = 0.70 * iou + 0.30 * h_sim if iou >= 0.15 else -1.0
+
+            while True:
+                r_i, d_idx = np.unravel_index(np.argmax(low_matrix), low_matrix.shape)
+                if low_matrix[r_i, d_idx] < 0.25:
+                    break
+                t_idx = rem_trks[r_i]
+                self.trackers[t_idx].update(
+                    low_dets[d_idx]["bbox"], low_hists[d_idx], low_dets[d_idx]["conf"]
+                )
+                unmatched_trks.discard(t_idx)
+                low_matrix[r_i, :] = -1.0
+                low_matrix[:, d_idx] = -1.0
+
+        # Chi tao track moi tu detection tin cay cao (high_dets) de loai nhieu gia
+        for d_idx in unmatched_high:
+            new_trk = KalmanBoxTracker(high_dets[d_idx]["bbox"], high_hists[d_idx])
             if (
                 self.locked_id is not None
                 and self.locked_hist_gallery is not None
                 and not any(t.id == self.locked_id for t in self.trackers)
             ):
-                reid_sim = histogram_similarity(self.locked_hist_gallery, det_hists[d_idx])
+                reid_sim = histogram_similarity(self.locked_hist_gallery, high_hists[d_idx])
                 if reid_sim >= 0.72:
                     new_trk.id = self.locked_id
-                    print(f"[Tracker] Re-ID tái khóa thành công mục tiêu ID:{self.locked_id} (sim={reid_sim:.2f})")
+                    print(f"[Tracker] Re-ID tai khoa thanh cong muc tieu ID:{self.locked_id} (sim={reid_sim:.2f})")
             self.trackers.append(new_trk)
 
         active_outputs = []
@@ -248,7 +275,6 @@ class HumanTracker:
 
         self.trackers = surviving_trackers
 
-        # Cập nhật trạng thái Tracker (IDLE / LOCKED / COASTING / LOST)
         if self.locked_id is None:
             self.state = self.IDLE
         elif locked_visible:
@@ -281,7 +307,7 @@ class HumanTracker:
             self.locked_id = best_id
             self.last_seen_time = time.time()
             self.state = self.LOCKED
-            print(f"[Tracker] Đã khóa mục tiêu người điều khiển ID:{best_id}")
+            print(f"[Tracker] Da khoa muc tieu nguoi dieu khien ID:{best_id}")
         return best_id
 
     def auto_lock_primary(self, active_tracks):

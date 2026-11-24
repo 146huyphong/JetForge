@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-distance_estimator.py - Ước lượng khoảng cách Z hiệu chuẩn đa mức sáng & phản hồi nhanh (chống trễ pha)
+distance_estimator.py - Uoc luong khoang cach Z hieu chuan da muc sang + chieu mat san cu ly gan
 """
 from collections import deque
 import json
@@ -9,6 +9,15 @@ import math
 import os
 import numpy as np
 import config
+
+OBSTACLE_HEIGHT_M = {
+    "chair": 0.85,
+    "table": 0.75,
+    "couch": 0.85,
+    "backpack": 0.45,
+    "suitcase": 0.65,
+    "bottle": 0.25,
+}
 
 
 class DistanceEstimator:
@@ -18,6 +27,7 @@ class DistanceEstimator:
         hfov_rad = math.radians(config.CAMERA_HFOV_DEG)
         self.fx = (self.img_w / 2.0) / math.tan(hfov_rad / 2.0)
         self.fy = self.fx
+        self.cam_height_m = 0.12
         self.ema_z = None
         self._z_window = deque(maxlen=3)
         self._ema_luma = 115.0
@@ -54,25 +64,47 @@ class DistanceEstimator:
         self.ema_z = None
         self._z_window.clear()
 
-    def estimate(self, bbox, frame_shape=None, frame=None):
+    def _resolve_intrinsics(self, frame_shape=None, frame=None):
         if frame is not None and hasattr(frame, "shape") and len(frame.shape) >= 2:
-            img_h = float(frame.shape[0])
-            img_w = float(frame.shape[1])
+            img_h, img_w = float(frame.shape[0]), float(frame.shape[1])
             hfov_rad = math.radians(config.CAMERA_HFOV_DEG)
             fx = (img_w / 2.0) / math.tan(hfov_rad / 2.0)
-            fy = fx
+            return img_w, img_h, fx, fx
+        if frame_shape is not None and len(frame_shape) >= 2:
+            img_h, img_w = float(frame_shape[0]), float(frame_shape[1])
+            hfov_rad = math.radians(config.CAMERA_HFOV_DEG)
+            fx = (img_w / 2.0) / math.tan(hfov_rad / 2.0)
+            return img_w, img_h, fx, fx
+        return self.img_w, self.img_h, self.fx, self.fy
+
+    def estimate_obstacle(self, bbox, cls_name="chair", frame_shape=None):
+        """Tinh (bearing_rad, dist_m) cho vat can phat hien boi YOLO."""
+        img_w, img_h, fx, fy = self._resolve_intrinsics(frame_shape=frame_shape)
+        cy = 0.5 * img_h
+        x1, y1, x2, y2 = bbox
+        cx = 0.5 * (x1 + x2)
+        box_h = max(1.0, y2 - y1)
+
+        bearing_rad = math.atan2(cx - (0.5 * img_w), fx)
+        z_pinhole = (fy * OBSTACLE_HEIGHT_M.get(cls_name, 0.70)) / box_h
+
+        # Neu canh day vat can cham san (y2 > cy + 4), ket hop phep chieu mat san
+        if y2 > cy + 4.0:
+            z_floor = (fy * self.cam_height_m) / max(1.0, (y2 - cy))
+            z = min(z_pinhole, max(0.15, z_floor * 1.15))
+        else:
+            z = z_pinhole
+
+        return float(bearing_rad), float(max(0.15, min(5.0, z)))
+
+    def estimate(self, bbox, frame_shape=None, frame=None):
+        img_w, img_h, fx, fy = self._resolve_intrinsics(frame_shape=frame_shape, frame=frame)
+        cy = 0.5 * img_h
+
+        if frame is not None and hasattr(frame, "shape") and len(frame.shape) >= 2:
             y_floor_start = int(img_h * 0.45)
             luma_now = float(np.mean(frame[y_floor_start::6, ::8]))
             self._ema_luma = 0.25 * luma_now + 0.75 * self._ema_luma
-        elif frame_shape is not None and len(frame_shape) >= 2:
-            img_h = float(frame_shape[0])
-            img_w = float(frame_shape[1])
-            hfov_rad = math.radians(config.CAMERA_HFOV_DEG)
-            fx = (img_w / 2.0) / math.tan(hfov_rad / 2.0)
-            fy = fx
-        else:
-            img_w, img_h = self.img_w, self.img_h
-            fx, fy = self.fx, self.fy
 
         x1, y1, x2, y2 = bbox
         box_w = max(1.0, x2 - x1)
@@ -104,7 +136,11 @@ class DistanceEstimator:
         z_width_clamped = max(z_ground * 0.85, min(z_ground * 1.15, z_width))
         z_near_mid = 0.88 * z_ground + 0.12 * z_width_clamped
 
-        if top_margin < 0.32:
+        # Nhanh chieu mat san khi dinh hop cham mep tren anh (nguoi dung rat sat camera)
+        if y1 <= 4.0 and y2 > cy + 4.0:
+            z_floor_pinhole = max(0.15, (fy * self.cam_height_m) / max(1.0, (y2 - cy)))
+            z_raw = min(z_near_mid, z_floor_pinhole)
+        elif top_margin < 0.32:
             z_raw = z_near_mid
         else:
             z_far = (fy * 1.65) / box_h
@@ -113,7 +149,6 @@ class DistanceEstimator:
 
         z_raw = max(0.15, min(5.0, z_raw))
 
-        # Lọc trung vị 3 khung hình loại bỏ nhiễu đơn frame mà không làm trễ tín hiệu khi xe đang chạy
         self._z_window.append(z_raw)
         z_med = float(np.median(self._z_window))
 

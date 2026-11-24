@@ -1,0 +1,13 @@
+{"t": 1795528502.683, "event": "TARGET_LOCKED", "track_id": 2}
+{"t": 1795528505.367, "event": "MODE_CHANGED", "mode": "AUTO"}
+{"t": 1795528506.244, "event": "MODE_CHANGED", "mode": "AUTO"}
+{"t": 1795528531.117, "event": "MODE_CHANGED", "mode": "AUTO"}
+{"t": 1795528531.597, "event": "MODE_CHANGED", "mode": "MANUAL"}
+{"t": 1795528581.054, "event": "MODE_CHANGED", "mode": "AUTO"}
+{"t": 1795528581.138, "event": "SAFETY_TRANSITION", "reason": "OBSTACLE_CAUTION"}
+{"t": 1795528581.869, "event": "MODE_CHANGED", "mode": "ESTOP"}
+{"t": 1795528581.874, "event": "SAFETY_TRANSITION", "reason": "ESTOP"}
+{"t": 1795528584.215, "event": "MODE_CHANGED", "mode": "MANUAL"}
+{"t": 1795528584.227, "event": "SAFETY_TRANSITION", "reason": "OK"}
+{"t": 1795528585.4, "event": "SAFETY_TRANSITION", "reason": "OBSTACLE_CAUTION"}
+{"t": 1795528585.81, "event": "SAFETY_TRANSITION", "reason": "OK"}
